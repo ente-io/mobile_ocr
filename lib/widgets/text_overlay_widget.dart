@@ -288,27 +288,7 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
         _scheduleMetricsRebuild(constraints);
         final Widget? copyButton = _buildCopyHandleButton(constraints);
 
-        return Listener(
-          onPointerDown: _handlePointerDown,
-          onPointerMove: _handlePointerMove,
-          onPointerUp: _handlePointerUp,
-          onPointerCancel: _handlePointerCancel,
-          child: GestureDetector(
-            behavior: _isOverlayOnly
-                ? HitTestBehavior.translucent
-                : HitTestBehavior.opaque,
-            onTapDown: _isOverlayOnly
-                ? (_activeSelections.isNotEmpty ? _handleOverlayTap : null)
-                : _handleTapDown,
-            onDoubleTapDown: _isOverlayOnly ? null : _handleDoubleTapDown,
-            onDoubleTap: _isOverlayOnly ? null : _handleDoubleTap,
-            onLongPressStart: (details) {
-              if (_activePointerCount > 1) {
-                return;
-              }
-              _onLongPressStart(details);
-            },
-            child: InteractiveViewer(
+        final Widget interactiveChild = InteractiveViewer(
               key: _interactiveViewerKey,
               transformationController: _transformController,
               minScale: _isOverlayOnly ? 1.0 : 0.5,
@@ -347,11 +327,69 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
                   if (copyButton != null) copyButton,
                 ],
               ),
-            ),
-          ),
+            );
+
+        final Widget gestureChild;
+        if (_isOverlayOnly) {
+          gestureChild = RawGestureDetector(
+            behavior: HitTestBehavior.translucent,
+            gestures: <Type, GestureRecognizerFactory>{
+              _TextRegionLongPressRecognizer:
+                  GestureRecognizerFactoryWithHandlers<
+                    _TextRegionLongPressRecognizer
+                  >(
+                    () => _TextRegionLongPressRecognizer(
+                      hitTestBlock: _isPositionOnText,
+                    ),
+                    (_TextRegionLongPressRecognizer instance) {
+                      instance
+                        ..hitTestBlock = _isPositionOnText
+                        ..onLongPressStart = (details) {
+                          if (_activePointerCount > 1) return;
+                          _onLongPressStart(details);
+                        };
+                    },
+                  ),
+              if (_activeSelections.isNotEmpty)
+                TapGestureRecognizer:
+                    GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                      TapGestureRecognizer.new,
+                      (TapGestureRecognizer instance) {
+                        instance.onTapDown = _handleOverlayTap;
+                      },
+                    ),
+            },
+            child: interactiveChild,
+          );
+        } else {
+          gestureChild = GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: _handleTapDown,
+            onDoubleTapDown: _handleDoubleTapDown,
+            onDoubleTap: _handleDoubleTap,
+            onLongPressStart: (details) {
+              if (_activePointerCount > 1) return;
+              _onLongPressStart(details);
+            },
+            child: interactiveChild,
+          );
+        }
+
+        return Listener(
+          onPointerDown: _handlePointerDown,
+          onPointerMove: _handlePointerMove,
+          onPointerUp: _handlePointerUp,
+          onPointerCancel: _handlePointerCancel,
+          child: gestureChild,
         );
       },
     );
+  }
+
+  bool _isPositionOnText(Offset globalPosition) {
+    final scenePoint = _sceneFromGlobal(globalPosition);
+    if (scenePoint == null) return false;
+    return _hitTestBlock(scenePoint) != null;
   }
 
   Offset? _sceneFromGlobal(Offset globalPoint) {
@@ -2539,5 +2577,32 @@ class _EditableBlockPainter extends CustomPainter {
     return oldDelegate.visual != visual ||
         oldDelegate.selection != selection ||
         oldDelegate.showBoundary != showBoundary;
+  }
+}
+
+/// A [LongPressGestureRecognizer] that only accepts when the press
+/// position is on a text region. If not on text, it rejects so that
+/// competing recognizers (e.g. motion photo playback) can win.
+class _TextRegionLongPressRecognizer extends LongPressGestureRecognizer {
+  bool Function(Offset globalPosition) hitTestBlock;
+
+  _TextRegionLongPressRecognizer({required this.hitTestBlock});
+
+  Offset? _initialGlobalPosition;
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    _initialGlobalPosition = event.position;
+    super.addAllowedPointer(event);
+  }
+
+  @override
+  void didExceedDeadline() {
+    final pos = _initialGlobalPosition;
+    if (pos != null && hitTestBlock(pos)) {
+      super.didExceedDeadline();
+    } else {
+      resolve(GestureDisposition.rejected);
+    }
   }
 }
