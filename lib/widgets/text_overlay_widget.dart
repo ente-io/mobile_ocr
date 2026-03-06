@@ -294,7 +294,9 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
           onPointerUp: _handlePointerUp,
           onPointerCancel: _handlePointerCancel,
           child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
+            behavior: _isOverlayOnly
+                ? HitTestBehavior.translucent
+                : HitTestBehavior.opaque,
             onTapDown: _handleTapDown,
             onDoubleTapDown: _handleDoubleTapDown,
             onDoubleTap: _handleDoubleTap,
