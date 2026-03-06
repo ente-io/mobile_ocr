@@ -297,9 +297,11 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
             behavior: _isOverlayOnly
                 ? HitTestBehavior.translucent
                 : HitTestBehavior.opaque,
-            onTapDown: _handleTapDown,
-            onDoubleTapDown: _handleDoubleTapDown,
-            onDoubleTap: _handleDoubleTap,
+            onTapDown: _isOverlayOnly
+                ? (_activeSelections.isNotEmpty ? _handleOverlayTap : null)
+                : _handleTapDown,
+            onDoubleTapDown: _isOverlayOnly ? null : _handleDoubleTapDown,
+            onDoubleTap: _isOverlayOnly ? null : _handleDoubleTap,
             onLongPressStart: (details) {
               if (_activePointerCount > 1) {
                 return;
@@ -1233,6 +1235,12 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     _selectionDragInProgress = true;
     _selectionPointerDownScenePoint ??= scenePoint;
     HapticFeedback.mediumImpact();
+  }
+
+  void _handleOverlayTap(TapDownDetails details) {
+    if (_activeSelections.isNotEmpty) {
+      _clearSelection();
+    }
   }
 
   void _handleTapDown(TapDownDetails details) {
