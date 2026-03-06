@@ -491,22 +491,34 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
           selectionHandleColor: _entePrimaryColor,
         );
 
+    final overlayWidget = TextOverlayWidget(
+      imageFile: widget.overlayOnly ? null : imageFile,
+      imageSize: widget.overlayOnly ? _imageSize : null,
+      textBlocks: textBlocks,
+      onTextBlocksSelected: widget.onTextBlocksSelected,
+      onTextCopied: widget.onTextCopied,
+      onSelectionStart: _dismissEditorHint,
+      showUnselectedBoundaries: widget.showUnselectedBoundaries,
+      enableSelectionPreview: widget.enableSelectionPreview,
+      debugMode: widget.debugMode,
+      controller: _textOverlayController,
+    );
+
+    // In overlay-only mode, don't wrap in a Container with a color —
+    // even Colors.transparent creates a hit target that blocks the
+    // underlying PageView from receiving swipes.
+    if (widget.overlayOnly) {
+      return TextSelectionTheme(
+        data: overlaySelectionTheme,
+        child: overlayWidget,
+      );
+    }
+
     return Container(
       color: widget.backgroundColor,
       child: TextSelectionTheme(
         data: overlaySelectionTheme,
-        child: TextOverlayWidget(
-          imageFile: widget.overlayOnly ? null : imageFile,
-          imageSize: widget.overlayOnly ? _imageSize : null,
-          textBlocks: textBlocks,
-          onTextBlocksSelected: widget.onTextBlocksSelected,
-          onTextCopied: widget.onTextCopied,
-          onSelectionStart: _dismissEditorHint,
-          showUnselectedBoundaries: widget.showUnselectedBoundaries,
-          enableSelectionPreview: widget.enableSelectionPreview,
-          debugMode: widget.debugMode,
-          controller: _textOverlayController,
-        ),
+        child: overlayWidget,
       ),
     );
   }

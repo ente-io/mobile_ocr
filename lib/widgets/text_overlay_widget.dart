@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_ocr/models/text_block.dart';
 
@@ -283,56 +284,113 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
   }
 
   Widget _buildInteractiveImage() {
+    if (_isOverlayOnly) {
+      return _buildOverlayOnlyImage();
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
         _scheduleMetricsRebuild(constraints);
         final Widget? copyButton = _buildCopyHandleButton(constraints);
 
         final Widget interactiveChild = InteractiveViewer(
-              key: _interactiveViewerKey,
-              transformationController: _transformController,
-              minScale: _isOverlayOnly ? 1.0 : 0.5,
-              maxScale: _isOverlayOnly ? 1.0 : 4.0,
-              panEnabled: _isOverlayOnly ? false : _isPanEnabled,
-              scaleEnabled: !_isOverlayOnly,
-              child: Stack(
-                children: [
-                  if (!_isOverlayOnly)
-                    Center(
-                      child: Image.file(
-                        widget.imageFile!,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
-                        frameBuilder:
-                            (context, child, frame, wasSynchronouslyLoaded) {
-                              if (frame != null) {
-                                _scheduleMetricsRebuild(constraints);
-                              }
-                              if (wasSynchronouslyLoaded) {
-                                return child;
-                              }
-                              return AnimatedOpacity(
-                                opacity: frame == null ? 0 : 1,
-                                duration: const Duration(milliseconds: 200),
-                                curve: Curves.easeOut,
-                                child: child,
-                              );
-                            },
-                      ),
-                    )
-                  else
-                    const SizedBox.expand(),
-                  ..._buildEditableBlockOverlays(),
-                  ..._buildSelectionHandles(),
-                  if (copyButton != null) copyButton,
-                ],
+          key: _interactiveViewerKey,
+          transformationController: _transformController,
+          minScale: 0.5,
+          maxScale: 4.0,
+          panEnabled: _isPanEnabled,
+          scaleEnabled: true,
+          child: Stack(
+            children: [
+              Center(
+                child: Image.file(
+                  widget.imageFile!,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                  frameBuilder:
+                      (context, child, frame, wasSynchronouslyLoaded) {
+                        if (frame != null) {
+                          _scheduleMetricsRebuild(constraints);
+                        }
+                        if (wasSynchronouslyLoaded) {
+                          return child;
+                        }
+                        return AnimatedOpacity(
+                          opacity: frame == null ? 0 : 1,
+                          duration: const Duration(milliseconds: 200),
+                          curve: Curves.easeOut,
+                          child: child,
+                        );
+                      },
+                ),
               ),
-            );
+              ..._buildEditableBlockOverlays(),
+              ..._buildSelectionHandles(),
+              if (copyButton != null) copyButton,
+            ],
+          ),
+        );
 
-        final Widget gestureChild;
-        if (_isOverlayOnly) {
-          gestureChild = RawGestureDetector(
-            behavior: HitTestBehavior.translucent,
+        return Listener(
+          onPointerDown: _handlePointerDown,
+          onPointerMove: _handlePointerMove,
+          onPointerUp: _handlePointerUp,
+          onPointerCancel: _handlePointerCancel,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: _handleTapDown,
+            onDoubleTapDown: _handleDoubleTapDown,
+            onDoubleTap: _handleDoubleTap,
+            onLongPressStart: (details) {
+              if (_activePointerCount > 1) return;
+              _onLongPressStart(details);
+            },
+            child: interactiveChild,
+          ),
+        );
+      },
+    );
+  }
+
+  /// Overlay-only mode: renders text boundaries and handles without any
+  /// image, and crucially without intercepting gestures. The entire visual
+  /// layer is wrapped in [IgnorePointer] so swipes/taps pass through to
+  /// the underlying PageView / PhotoView. A [_TextRegionHitTestBox] sits
+  /// on top and only reports hits when the touch lands on a text region,
+  /// allowing long-press-to-select without blocking navigation.
+  Widget _buildOverlayOnlyImage() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _scheduleMetricsRebuild(constraints);
+        final Widget? copyButton = _buildCopyHandleButton(constraints);
+
+        // All visual content shares the same KeyedSubtree so coordinates
+        // are consistent. Text boundaries are in IgnorePointer; selection
+        // handles and copy button are outside it so they can be touched.
+        final Widget visualLayer = KeyedSubtree(
+          key: _interactiveViewerKey,
+          child: Stack(
+            children: [
+              IgnorePointer(
+                child: Stack(
+                  children: [
+                    const SizedBox.expand(),
+                    ..._buildEditableBlockOverlays(),
+                  ],
+                ),
+              ),
+              ..._buildSelectionHandles(),
+              if (copyButton != null) copyButton,
+            ],
+          ),
+        );
+
+        // Gesture layer: only intercepts touches on text regions
+        // or selection handles. Uses a custom RenderBox that returns
+        // false from hitTest unless the position passes the check.
+        final Widget gestureLayer = _TextRegionHitTestBox(
+          hitTest: _isPositionOnText,
+          child: RawGestureDetector(
+            behavior: HitTestBehavior.opaque,
             gestures: <Type, GestureRecognizerFactory>{
               _TextRegionLongPressRecognizer:
                   GestureRecognizerFactoryWithHandlers<
@@ -359,28 +417,22 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
                       },
                     ),
             },
-            child: interactiveChild,
-          );
-        } else {
-          gestureChild = GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapDown: _handleTapDown,
-            onDoubleTapDown: _handleDoubleTapDown,
-            onDoubleTap: _handleDoubleTap,
-            onLongPressStart: (details) {
-              if (_activePointerCount > 1) return;
-              _onLongPressStart(details);
-            },
-            child: interactiveChild,
-          );
-        }
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: _handlePointerDown,
+              onPointerMove: _handlePointerMove,
+              onPointerUp: _handlePointerUp,
+              onPointerCancel: _handlePointerCancel,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        );
 
-        return Listener(
-          onPointerDown: _handlePointerDown,
-          onPointerMove: _handlePointerMove,
-          onPointerUp: _handlePointerUp,
-          onPointerCancel: _handlePointerCancel,
-          child: gestureChild,
+        return Stack(
+          children: [
+            visualLayer,
+            gestureLayer,
+          ],
         );
       },
     );
@@ -389,6 +441,10 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
   bool _isPositionOnText(Offset globalPosition) {
     final scenePoint = _sceneFromGlobal(globalPosition);
     if (scenePoint == null) return false;
+    // Also accept hits on selection handles so they can be dragged.
+    if (_activeSelections.isNotEmpty && _isScenePointOnHandle(scenePoint)) {
+      return true;
+    }
     return _hitTestBlock(scenePoint) != null;
   }
 
@@ -2583,6 +2639,47 @@ class _EditableBlockPainter extends CustomPainter {
 /// A [LongPressGestureRecognizer] that only accepts when the press
 /// position is on a text region. If not on text, it rejects so that
 /// competing recognizers (e.g. motion photo playback) can win.
+/// A [SingleChildRenderObjectWidget] whose render object only reports a hit
+/// when the touch position passes the provided [hitTest] callback. This lets
+/// the overlay be invisible to Flutter's hit-test tree for most of the screen
+/// area, so the underlying PageView / PhotoView receives swipes and taps.
+class _TextRegionHitTestBox extends SingleChildRenderObjectWidget {
+  final bool Function(Offset globalPosition) hitTest;
+
+  const _TextRegionHitTestBox({
+    required this.hitTest,
+    required super.child,
+  });
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderTextRegionHitTestBox(hitTest);
+  }
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderTextRegionHitTestBox renderObject,
+  ) {
+    renderObject.hitTestCallback = hitTest;
+  }
+}
+
+class _RenderTextRegionHitTestBox extends RenderProxyBox {
+  bool Function(Offset globalPosition) hitTestCallback;
+
+  _RenderTextRegionHitTestBox(this.hitTestCallback);
+
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) {
+    final global = localToGlobal(position);
+    if (!hitTestCallback(global)) {
+      return false;
+    }
+    return super.hitTest(result, position: position);
+  }
+}
+
 class _TextRegionLongPressRecognizer extends LongPressGestureRecognizer {
   bool Function(Offset globalPosition) hitTestBlock;
 
