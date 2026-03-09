@@ -27,7 +27,7 @@ abstract class MobileOcrPlatform extends PlatformInterface {
     throw UnimplementedError('platformVersion() has not been implemented.');
   }
 
-  Future<List<Map<dynamic, dynamic>>> detectText({
+  Future<Map<dynamic, dynamic>> detectText({
     required String imagePath,
     bool includeAllConfidenceScores = false,
   }) {

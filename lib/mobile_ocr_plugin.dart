@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:mobile_ocr/models/text_block.dart';
 
@@ -24,7 +25,7 @@ class MobileOcr {
   /// [imagePath] must point to a readable PNG or JPEG file.
   /// By default, only returns results with confidence >= 0.8. Set
   /// [includeAllConfidenceScores] to true to include detections down to 0.5.
-  Future<List<TextBlock>> detectText({
+  Future<TextDetectionResult> detectText({
     required String imagePath,
     bool includeAllConfidenceScores = false,
   }) async {
@@ -33,11 +34,11 @@ class MobileOcr {
       throw ArgumentError('Image file does not exist at path: $imagePath');
     }
 
-    final results = await MobileOcrPlatform.instance.detectText(
+    final result = await MobileOcrPlatform.instance.detectText(
       imagePath: file.path,
       includeAllConfidenceScores: includeAllConfidenceScores,
     );
-    return results.map(TextBlock.fromMap).toList(growable: false);
+    return TextDetectionResult.fromMap(result);
   }
 
   /// Quickly determine whether the image contains high-confidence text.
@@ -51,6 +52,26 @@ class MobileOcr {
     }
 
     return MobileOcrPlatform.instance.hasText(imagePath: file.path);
+  }
+}
+
+/// Result of a text detection operation, including detected blocks and
+/// the source image dimensions.
+class TextDetectionResult {
+  final List<TextBlock> blocks;
+  final Size imageSize;
+
+  TextDetectionResult({required this.blocks, required this.imageSize});
+
+  factory TextDetectionResult.fromMap(Map<dynamic, dynamic> map) {
+    final blocksList = (map['blocks'] as List?)?.cast<Map<dynamic, dynamic>>() ?? const [];
+    final blocks = blocksList.map(TextBlock.fromMap).toList(growable: false);
+    final imageWidth = (map['imageWidth'] as num?)?.toDouble() ?? 0.0;
+    final imageHeight = (map['imageHeight'] as num?)?.toDouble() ?? 0.0;
+    return TextDetectionResult(
+      blocks: blocks,
+      imageSize: Size(imageWidth, imageHeight),
+    );
   }
 }
 

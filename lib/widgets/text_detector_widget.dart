@@ -111,6 +111,10 @@ class TextDetectorWidget extends StatefulWidget {
   /// Controller for imperative text selection actions.
   final TextDetectorController? controller;
 
+  /// When true, only the text overlay is rendered (no image). Use this when
+  /// the image is already displayed by another widget underneath.
+  final bool overlayOnly;
+
   const TextDetectorWidget({
     super.key,
     required this.imagePath,
@@ -123,6 +127,7 @@ class TextDetectorWidget extends StatefulWidget {
     this.debugMode = false,
     this.strings = const TextDetectorStrings(),
     this.controller,
+    this.overlayOnly = false,
   });
 
   @override
@@ -143,6 +148,7 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
   Timer? _editorHintTimer;
   bool _showEditorHint = false;
   bool _isNetworkError = false;
+  Size? _imageSize;
   bool get _hasSelectableText =>
       _detectedTextBlocks != null && _detectedTextBlocks!.isNotEmpty;
 
@@ -205,7 +211,9 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         _resolvedImagePath = resolvedPath;
       });
 
-      _precacheCurrentImage();
+      if (!widget.overlayOnly) {
+        _precacheCurrentImage();
+      }
 
       if (widget.autoDetect) {
         unawaited(_detectText());
@@ -314,11 +322,12 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         throw Exception(_errorMessage);
       }
 
-      final blocks = await _ocr.detectText(imagePath: imagePath);
+      final result = await _ocr.detectText(imagePath: imagePath);
 
       if (mounted && widget.imagePath == requestedPath) {
         setState(() {
-          _detectedTextBlocks = blocks;
+          _detectedTextBlocks = result.blocks;
+          _imageSize = result.imageSize;
           _errorMessage = null;
         });
         _notifyController();
@@ -465,6 +474,9 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
     if (imageFile == null || textBlocks == null) {
       return const SizedBox.shrink();
     }
+    if (widget.overlayOnly && _imageSize == null) {
+      return const SizedBox.shrink();
+    }
 
     final TextSelectionThemeData baseSelectionTheme = TextSelectionTheme.of(
       context,
@@ -477,21 +489,34 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
           selectionHandleColor: _entePrimaryColor,
         );
 
+    final overlayWidget = TextOverlayWidget(
+      imageFile: widget.overlayOnly ? null : imageFile,
+      imageSize: widget.overlayOnly ? _imageSize : null,
+      textBlocks: textBlocks,
+      onTextBlocksSelected: widget.onTextBlocksSelected,
+      onTextCopied: widget.onTextCopied,
+      onSelectionStart: _dismissEditorHint,
+      showUnselectedBoundaries: widget.showUnselectedBoundaries,
+      enableSelectionPreview: widget.enableSelectionPreview,
+      debugMode: widget.debugMode,
+      controller: _textOverlayController,
+    );
+
+    // In overlay-only mode, don't wrap in a Container with a color —
+    // even Colors.transparent creates a hit target that blocks the
+    // underlying PageView from receiving swipes.
+    if (widget.overlayOnly) {
+      return TextSelectionTheme(
+        data: overlaySelectionTheme,
+        child: overlayWidget,
+      );
+    }
+
     return Container(
       color: widget.backgroundColor,
       child: TextSelectionTheme(
         data: overlaySelectionTheme,
-        child: TextOverlayWidget(
-          imageFile: imageFile,
-          textBlocks: textBlocks,
-          onTextBlocksSelected: widget.onTextBlocksSelected,
-          onTextCopied: widget.onTextCopied,
-          onSelectionStart: _dismissEditorHint,
-          showUnselectedBoundaries: widget.showUnselectedBoundaries,
-          enableSelectionPreview: widget.enableSelectionPreview,
-          debugMode: widget.debugMode,
-          controller: _textOverlayController,
-        ),
+        child: overlayWidget,
       ),
     );
   }

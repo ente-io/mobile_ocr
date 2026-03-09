@@ -285,7 +285,11 @@ public class MobileOcrPlugin: NSObject, FlutterPlugin {
 
             // Return results on main thread
             DispatchQueue.main.async {
-                result(detectedTexts)
+                result([
+                    "blocks": detectedTexts,
+                    "imageWidth": cgImage.width,
+                    "imageHeight": cgImage.height
+                ] as [String: Any])
             }
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)

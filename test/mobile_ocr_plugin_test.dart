@@ -14,11 +14,11 @@ class MockMobileOcrPlatform
   Future<String?> getPlatformVersion() => Future.value('42');
 
   @override
-  Future<List<Map<dynamic, dynamic>>> detectText({
+  Future<Map<dynamic, dynamic>> detectText({
     required String imagePath,
     bool includeAllConfidenceScores = false,
   }) async {
-    return [];
+    return {'blocks': [], 'imageWidth': 0, 'imageHeight': 0};
   }
 
   @override
