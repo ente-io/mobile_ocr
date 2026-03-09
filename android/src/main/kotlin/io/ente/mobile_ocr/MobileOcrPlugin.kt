@@ -166,7 +166,7 @@ class MobileOcrPlugin: FlutterPlugin, MethodCallHandler {
     }
   }
 
-  private suspend fun processImage(imagePath: String, includeAllConfidenceScores: Boolean = false): List<Map<String, Any>> {
+  private suspend fun processImage(imagePath: String, includeAllConfidenceScores: Boolean = false): Map<String, Any> {
     if (shuttingDown) {
       throw IllegalStateException("Plugin is shutting down")
     }
@@ -183,6 +183,9 @@ class MobileOcrPlugin: FlutterPlugin, MethodCallHandler {
           ?: throw IllegalArgumentException("Failed to decode image at path: $imagePath")
       val correctedBitmap = applyExifOrientation(bitmap, imagePath)
 
+      val imageWidth = correctedBitmap.width
+      val imageHeight = correctedBitmap.height
+
       // Process with OCR
       val ocrResults = processor.processImage(correctedBitmap, includeAllConfidenceScores)
       if (correctedBitmap !== bitmap && !bitmap.isRecycled) {
@@ -193,10 +196,14 @@ class MobileOcrPlugin: FlutterPlugin, MethodCallHandler {
       }
 
       if (ocrResults.texts.isEmpty()) {
-        return emptyList()
+        return hashMapOf(
+          "blocks" to emptyList<Map<String, Any>>(),
+          "imageWidth" to imageWidth,
+          "imageHeight" to imageHeight
+        )
       }
 
-      return ocrResults.boxes.mapIndexed { index, box ->
+      val blocks = ocrResults.boxes.mapIndexed { index, box ->
         val pointMaps: List<Map<String, Double>> = box.points.map { point ->
           mapOf(
             "x" to point.x.toDouble(),
@@ -223,6 +230,12 @@ class MobileOcrPlugin: FlutterPlugin, MethodCallHandler {
           "characters" to characterMaps
         )
       }
+
+      return hashMapOf(
+        "blocks" to blocks,
+        "imageWidth" to imageWidth,
+        "imageHeight" to imageHeight
+      )
     } finally {
       activeTasks.decrementAndGet()
     }

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -212,9 +211,7 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         _resolvedImagePath = resolvedPath;
       });
 
-      if (widget.overlayOnly) {
-        await _readImageDimensions(file);
-      } else {
+      if (!widget.overlayOnly) {
         _precacheCurrentImage();
       }
 
@@ -325,11 +322,12 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         throw Exception(_errorMessage);
       }
 
-      final blocks = await _ocr.detectText(imagePath: imagePath);
+      final result = await _ocr.detectText(imagePath: imagePath);
 
       if (mounted && widget.imagePath == requestedPath) {
         setState(() {
-          _detectedTextBlocks = blocks;
+          _detectedTextBlocks = result.blocks;
+          _imageSize = result.imageSize;
           _errorMessage = null;
         });
         _notifyController();
@@ -688,19 +686,6 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
 
   void _notifyController() {
     widget.controller?._notifyStateChanged();
-  }
-
-  Future<void> _readImageDimensions(File file) async {
-    final bytes = await file.readAsBytes();
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    if (!mounted) return;
-    setState(() {
-      _imageSize = Size(
-        frame.image.width.toDouble(),
-        frame.image.height.toDouble(),
-      );
-    });
   }
 
   void _precacheCurrentImage() {

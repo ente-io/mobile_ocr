@@ -18,19 +18,19 @@ class MethodChannelMobileOcr extends MobileOcrPlatform {
   }
 
   @override
-  Future<List<Map<dynamic, dynamic>>> detectText({
+  Future<Map<dynamic, dynamic>> detectText({
     required String imagePath,
     bool includeAllConfidenceScores = false,
   }) async {
     final result =
-        await methodChannel.invokeListMethod<Map<dynamic, dynamic>>(
+        await methodChannel.invokeMapMethod<dynamic, dynamic>(
       'detectText',
       {
         'imagePath': imagePath,
         'includeAllConfidenceScores': includeAllConfidenceScores,
       },
     );
-    return result ?? const [];
+    return result ?? const {};
   }
 
   @override

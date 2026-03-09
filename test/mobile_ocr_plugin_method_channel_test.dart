@@ -15,18 +15,22 @@ void main() {
             case 'getPlatformVersion':
               return '42';
             case 'detectText':
-              return [
-                {
-                  'text': 'hello',
-                  'confidence': 0.9,
-                  'points': [
-                    {'x': 1.0, 'y': 2.0},
-                    {'x': 11.0, 'y': 2.0},
-                    {'x': 11.0, 'y': 7.0},
-                    {'x': 1.0, 'y': 7.0},
-                  ],
-                },
-              ];
+              return {
+                'blocks': [
+                  {
+                    'text': 'hello',
+                    'confidence': 0.9,
+                    'points': [
+                      {'x': 1.0, 'y': 2.0},
+                      {'x': 11.0, 'y': 2.0},
+                      {'x': 11.0, 'y': 7.0},
+                      {'x': 1.0, 'y': 7.0},
+                    ],
+                  },
+                ],
+                'imageWidth': 100,
+                'imageHeight': 200,
+              };
             case 'hasText':
               return true;
             default:
@@ -45,13 +49,16 @@ void main() {
   });
 
   test('detectText forwards path', () async {
-    final results = await platform.detectText(
+    final result = await platform.detectText(
       imagePath: '/tmp/test.png',
       includeAllConfidenceScores: true,
     );
-    expect(results, hasLength(1));
-    expect(results.first['text'], 'hello');
-    expect(results.first['points'], isNotEmpty);
+    final blocks = result['blocks'] as List;
+    expect(blocks, hasLength(1));
+    expect((blocks.first as Map)['text'], 'hello');
+    expect((blocks.first as Map)['points'], isNotEmpty);
+    expect(result['imageWidth'], 100);
+    expect(result['imageHeight'], 200);
   });
 
   test('hasText returns boolean result', () async {
