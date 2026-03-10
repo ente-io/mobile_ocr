@@ -123,6 +123,11 @@ class TextDetectorWidget extends StatefulWidget {
   /// Defaults to true for backward compatibility.
   final bool showEditorHint;
 
+  /// When set, the widget starts with the interaction animation active and
+  /// will auto-select text at this position after detection completes.
+  /// Used when the parent captured a long press before the widget was built.
+  final Offset? initialInteractionPosition;
+
   const TextDetectorWidget({
     super.key,
     required this.imagePath,
@@ -138,6 +143,7 @@ class TextDetectorWidget extends StatefulWidget {
     this.overlayOnly = false,
     this.showProcessingOverlay = true,
     this.showEditorHint = true,
+    this.initialInteractionPosition,
   });
 
   @override
@@ -168,8 +174,13 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
   void initState() {
     super.initState();
     widget.controller?._attach(this);
-    // Set initial processing state if auto-detecting
-    if (widget.autoDetect) {
+    // Pick up initial interaction from parent (e.g. long press before widget existed)
+    if (widget.initialInteractionPosition != null) {
+      _userAttemptedInteraction = true;
+      _pendingSelectionPosition = widget.initialInteractionPosition;
+      _isProcessing = true;
+    } else if (widget.autoDetect) {
+      // Set initial processing state if auto-detecting
       _isProcessing = true;
     }
     // Schedule file initialization after first frame to ensure immediate rendering
@@ -227,7 +238,7 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         _precacheCurrentImage();
       }
 
-      if (widget.autoDetect) {
+      if (widget.autoDetect || widget.initialInteractionPosition != null) {
         unawaited(_detectText());
       }
     } catch (error) {
@@ -393,13 +404,17 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
 
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
-      onLongPressStart: _isProcessing && _detectedTextBlocks == null
+      onLongPressStart: _detectedTextBlocks == null
           ? (details) {
               if (!_userAttemptedInteraction) {
                 setState(() {
                   _userAttemptedInteraction = true;
                   _pendingSelectionPosition = details.globalPosition;
                 });
+              }
+              // Start detection on long press if not already running
+              if (!_isProcessing && _resolvedImagePath != null) {
+                _detectText();
               }
             }
           : null,
