@@ -89,6 +89,50 @@ if (image != null) {
 }
 ```
 
+### Overlay-Only Mode
+
+When you already have an image viewer (e.g. `PhotoView`, `PageView`) and just need the text selection layer on top, use overlay-only mode. This renders only the transparent text boundaries and selection handles — no duplicate image.
+
+```dart
+TextDetectorWidget(
+  imagePath: '/path/to/image.png',
+  autoDetect: true,
+  overlayOnly: true,  // No image rendered, just the text layer
+  backgroundColor: Colors.transparent,
+  showUnselectedBoundaries: true,
+  controller: detectorController,
+)
+```
+
+In this mode:
+- Swipes, taps, and pinch-to-zoom pass through to the underlying viewer
+- Long-press on a detected text region triggers selection
+- Long-press elsewhere is ignored (competing gestures like motion photo playback win)
+- Selection handles can be dragged to extend the selection
+- The "Copy" and "Select All" toolbar appears on selection
+
+You can also use `TextOverlayWidget` directly by passing `imageSize` instead of `imageFile`:
+
+```dart
+TextOverlayWidget(
+  imageSize: Size(imageWidth, imageHeight),  // instead of imageFile
+  textBlocks: detectedBlocks,
+  showUnselectedBoundaries: true,
+)
+```
+
+### Pre-check with hasText()
+
+Use `hasText()` as a fast gate before running full detection:
+
+```dart
+final hasText = await ocrPlugin.hasText(imagePath: '/path/to/image.png');
+if (hasText) {
+  // Run full detection only when text is likely present
+  final blocks = await ocrPlugin.detectText(imagePath: '/path/to/image.png');
+}
+```
+
 ## Example App
 
 The plugin includes a comprehensive example app that demonstrates:

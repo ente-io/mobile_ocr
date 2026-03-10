@@ -45,6 +45,30 @@ class TextOverlayController {
     }
     return state._hasSelectableText;
   }
+
+  /// Queue a position to auto-select when the overlay is ready.
+  /// The selection happens after block visuals are computed.
+  Offset? _pendingAutoSelectPosition;
+
+  void selectTextAtPosition(Offset globalPosition) {
+    final state = _state;
+    if (state != null && state._blockVisuals.isNotEmpty) {
+      state._selectTextAtGlobalPosition(globalPosition);
+    } else {
+      // Block visuals aren't ready yet; store for later.
+      _pendingAutoSelectPosition = globalPosition;
+    }
+  }
+
+  void _consumePendingSelection() {
+    final pos = _pendingAutoSelectPosition;
+    if (pos == null) return;
+    _pendingAutoSelectPosition = null;
+    final state = _state;
+    if (state != null) {
+      state._selectTextAtGlobalPosition(pos);
+    }
+  }
 }
 
 /// A widget that overlays detected text on top of the source image while
@@ -432,6 +456,17 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
           children: [
             visualLayer,
             gestureLayer,
+            // When text is selected, a full-screen tap detector clears the
+            // selection when the user taps anywhere outside text/handles.
+            // Uses HitTestBehavior.translucent so swipes still pass through.
+            if (_activeSelections.isNotEmpty)
+              GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _clearSelection,
+                child: const SizedBox.expand(),
+              ),
+            ..._buildSelectionHandles(),
+            if (copyButton != null) copyButton,
           ],
         );
       },
@@ -726,6 +761,7 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
       _displayOffset = metrics.offset;
       _computeBlockVisuals();
     });
+    widget.controller?._consumePendingSelection();
   }
 
   Color _handleColor(BuildContext context) {
@@ -1028,7 +1064,7 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     if (caretRect == null) {
       return null;
     }
-    return isStart ? caretRect.topLeft : caretRect.bottomRight;
+    return isStart ? caretRect.bottomLeft : caretRect.bottomRight;
   }
 
   bool _isScenePointOnHandle(Offset scenePoint) {
@@ -2075,6 +2111,23 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     HapticFeedback.selectionClick();
     _notifySelection();
     return true;
+  }
+
+  /// Select the word at [globalPosition] if there is text there.
+  /// Falls back to the nearest text block if the exact position has no text.
+  bool _selectTextAtGlobalPosition(Offset globalPosition) {
+    final scenePoint = _sceneFromGlobal(globalPosition);
+    if (scenePoint == null) {
+      return false;
+    }
+    final blockIndex = _hitTestBlock(scenePoint) ??
+        _nearestBlockIndex(scenePoint);
+    if (blockIndex == null) {
+      return false;
+    }
+    widget.onSelectionStart?.call();
+    final bool selected = _performWordSelection(blockIndex, scenePoint);
+    return selected;
   }
 
   void _clearSelection() {

@@ -115,6 +115,19 @@ class TextDetectorWidget extends StatefulWidget {
   /// the image is already displayed by another widget underneath.
   final bool overlayOnly;
 
+  /// Whether to show the "Detecting text..." overlay during processing.
+  /// Defaults to true for backward compatibility.
+  final bool showProcessingOverlay;
+
+  /// Whether to show the selection hint after text is detected.
+  /// Defaults to true for backward compatibility.
+  final bool showEditorHint;
+
+  /// When set, the widget starts with the interaction animation active and
+  /// will auto-select text at this position after detection completes.
+  /// Used when the parent captured a long press before the widget was built.
+  final Offset? initialInteractionPosition;
+
   const TextDetectorWidget({
     super.key,
     required this.imagePath,
@@ -128,6 +141,9 @@ class TextDetectorWidget extends StatefulWidget {
     this.strings = const TextDetectorStrings(),
     this.controller,
     this.overlayOnly = false,
+    this.showProcessingOverlay = true,
+    this.showEditorHint = true,
+    this.initialInteractionPosition,
   });
 
   @override
@@ -149,6 +165,8 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
   bool _showEditorHint = false;
   bool _isNetworkError = false;
   Size? _imageSize;
+  bool _userAttemptedInteraction = false;
+  Offset? _pendingSelectionPosition;
   bool get _hasSelectableText =>
       _detectedTextBlocks != null && _detectedTextBlocks!.isNotEmpty;
 
@@ -156,8 +174,13 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
   void initState() {
     super.initState();
     widget.controller?._attach(this);
-    // Set initial processing state if auto-detecting
-    if (widget.autoDetect) {
+    // Pick up initial interaction from parent (e.g. long press before widget existed)
+    if (widget.initialInteractionPosition != null) {
+      _userAttemptedInteraction = true;
+      _pendingSelectionPosition = widget.initialInteractionPosition;
+      _isProcessing = true;
+    } else if (widget.autoDetect) {
+      // Set initial processing state if auto-detecting
       _isProcessing = true;
     }
     // Schedule file initialization after first frame to ensure immediate rendering
@@ -215,7 +238,7 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         _precacheCurrentImage();
       }
 
-      if (widget.autoDetect) {
+      if (widget.autoDetect || widget.initialInteractionPosition != null) {
         unawaited(_detectText());
       }
     } catch (error) {
@@ -246,6 +269,8 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         _imageFile = null;
         _errorMessage = null;
         _isNetworkError = false;
+        _userAttemptedInteraction = false;
+        _pendingSelectionPosition = null;
       });
       _notifyController();
       unawaited(_initializeFile());
@@ -325,13 +350,21 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
       final result = await _ocr.detectText(imagePath: imagePath);
 
       if (mounted && widget.imagePath == requestedPath) {
+        final pendingPos = _pendingSelectionPosition;
         setState(() {
           _detectedTextBlocks = result.blocks;
           _imageSize = result.imageSize;
           _errorMessage = null;
+          _pendingSelectionPosition = null;
         });
         _notifyController();
-        _handleEditorHint(blocks);
+        _handleEditorHint(_detectedTextBlocks ?? []);
+
+        // If the user long-pressed during processing, queue auto-select.
+        // The overlay controller will execute it once block visuals are ready.
+        if (pendingPos != null && (_detectedTextBlocks?.isNotEmpty ?? false)) {
+          _textOverlayController.selectTextAtPosition(pendingPos);
+        }
       }
     } catch (e) {
       debugPrint('Error detecting text: $e');
@@ -355,6 +388,8 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
       if (mounted && widget.imagePath == requestedPath) {
         setState(() {
           _isProcessing = false;
+          _userAttemptedInteraction = false;
+          _pendingSelectionPosition = null;
         });
         _notifyController();
       }
@@ -363,17 +398,42 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        _buildImageLayer(),
-        if (_isProcessing && _detectedTextBlocks == null)
-          _buildProcessingOverlay(),
-        if (_showEditorHint &&
-            _detectedTextBlocks != null &&
-            _detectedTextBlocks!.isNotEmpty)
-          _buildEditorHint(),
-        if (_errorMessage != null)
+    final bool showProcessingAnimation = _isProcessing &&
+        _detectedTextBlocks == null &&
+        _userAttemptedInteraction;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onLongPressStart: _detectedTextBlocks == null
+          ? (details) {
+              if (!_userAttemptedInteraction) {
+                setState(() {
+                  _userAttemptedInteraction = true;
+                  _pendingSelectionPosition = details.globalPosition;
+                });
+              }
+              // Start detection on long press if not already running
+              if (!_isProcessing && _resolvedImagePath != null) {
+                _detectText();
+              }
+            }
+          : null,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          _buildImageLayer(),
+          if (showProcessingAnimation) const _ScanLineAnimation(),
+          if (widget.showProcessingOverlay &&
+              _isProcessing &&
+              _detectedTextBlocks == null &&
+              !_userAttemptedInteraction)
+            _buildProcessingOverlay(),
+          if (widget.showEditorHint &&
+              _showEditorHint &&
+              _detectedTextBlocks != null &&
+              _detectedTextBlocks!.isNotEmpty)
+            _buildEditorHint(),
+          if (_errorMessage != null)
           Positioned(
             bottom: 32,
             left: 16,
@@ -391,7 +451,8 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
             right: 0,
             child: Center(child: _buildNoTextMessage()),
           ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -695,4 +756,78 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
     }
     precacheImage(FileImage(imageFile), context);
   }
+}
+
+/// A subtle scanning line that sweeps top-to-bottom while OCR is running.
+class _ScanLineAnimation extends StatefulWidget {
+  const _ScanLineAnimation();
+
+  @override
+  State<_ScanLineAnimation> createState() => _ScanLineAnimationState();
+}
+
+class _ScanLineAnimationState extends State<_ScanLineAnimation>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          return CustomPaint(
+            painter: _ScanLinePainter(
+              progress: _controller.value,
+              color: _entePrimaryColor,
+            ),
+            size: Size.infinite,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ScanLinePainter extends CustomPainter {
+  final double progress;
+  final Color color;
+
+  _ScanLinePainter({required this.progress, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double y = size.height * progress;
+    final paint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          color.withValues(alpha: 0.0),
+          color.withValues(alpha: 0.4),
+          color.withValues(alpha: 0.0),
+        ],
+        stops: const [0.0, 0.5, 1.0],
+      ).createShader(Rect.fromLTWH(0, y - 30, size.width, 60));
+    canvas.drawRect(Rect.fromLTWH(0, y - 30, size.width, 60), paint);
+  }
+
+  @override
+  bool shouldRepaint(_ScanLinePainter oldDelegate) =>
+      oldDelegate.progress != progress;
 }
