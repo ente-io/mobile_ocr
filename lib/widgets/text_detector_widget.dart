@@ -68,6 +68,10 @@ class TextDetectorController extends ChangeNotifier {
   /// Indicates if there is text that can be selected.
   bool get hasSelectableText => _state?._hasSelectableText ?? false;
 
+  /// Whether the user has explicitly interacted (e.g. long press).
+  bool get userAttemptedInteraction =>
+      _state?._userAttemptedInteraction ?? false;
+
   /// Programmatically select all recognized text.
   bool selectAllText() {
     final state = _state;
@@ -128,6 +132,10 @@ class TextDetectorWidget extends StatefulWidget {
   /// Used when the parent captured a long press before the widget was built.
   final Offset? initialInteractionPosition;
 
+  /// Whether to show the built-in scan line animation during processing.
+  /// Defaults to true for backward compatibility.
+  final bool showScanAnimation;
+
   const TextDetectorWidget({
     super.key,
     required this.imagePath,
@@ -144,6 +152,7 @@ class TextDetectorWidget extends StatefulWidget {
     this.showProcessingOverlay = true,
     this.showEditorHint = true,
     this.initialInteractionPosition,
+    this.showScanAnimation = true,
   });
 
   @override
@@ -411,6 +420,7 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
                   _userAttemptedInteraction = true;
                   _pendingSelectionPosition = details.globalPosition;
                 });
+                _notifyController();
               }
               // Start detection on long press if not already running
               if (!_isProcessing && _resolvedImagePath != null) {
@@ -422,7 +432,8 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
         fit: StackFit.expand,
         children: [
           _buildImageLayer(),
-          if (showProcessingAnimation) const _ScanLineAnimation(),
+          if (showProcessingAnimation && widget.showScanAnimation)
+            const _ScanLineAnimation(),
           if (widget.showProcessingOverlay &&
               _isProcessing &&
               _detectedTextBlocks == null &&
