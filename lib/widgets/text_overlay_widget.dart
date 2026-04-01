@@ -121,7 +121,7 @@ class TextOverlayWidget extends StatefulWidget {
 class _TextOverlayWidgetState extends State<TextOverlayWidget> {
   static const double _epsilon = 1e-6;
   static const double _characterHitPadding = 3.0;
-  static const double _handleHitboxExtent = 44.0;
+  static const double _handleHitboxExtent = 52.0;
   static const double _toolbarMinVerticalSpacing = 24.0;
   static const double _kMaterialTextLineHeight = 20.0;
   static const double _kDragStartSlop = 6.0;
