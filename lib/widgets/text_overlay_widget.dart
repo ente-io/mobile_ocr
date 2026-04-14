@@ -9,7 +9,10 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_ocr/models/text_block.dart';
 
-const double _kHighlightHorizontalPadding = 4.0;
+// OCR character boxes tend to overhang slightly on the left edge, so keep the
+// added selection slack slightly right-biased to visually center the highlight.
+const double _kHighlightLeftPadding = 3.0;
+const double _kHighlightRightPadding = 4.0;
 const double _kHighlightVerticalPadding = 1.6;
 const double _kHighlightCornerRadius = 4.0;
 const double _kHighlightLineToleranceFactor = 0.7;
@@ -913,6 +916,15 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     );
   }
 
+  Rect _inflateSelectionRect(Rect rect) {
+    return Rect.fromLTRB(
+      rect.left - _kHighlightLeftPadding,
+      rect.top - _kHighlightVerticalPadding,
+      rect.right + _kHighlightRightPadding,
+      rect.bottom + _kHighlightVerticalPadding,
+    );
+  }
+
   bool _isScenePointInSelectedRegion(Offset scenePoint) {
     final Rect? selectionBounds = _selectedRegionBounds();
     return selectionBounds != null && selectionBounds.contains(scenePoint);
@@ -1047,12 +1059,7 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
         if (charRect.isEmpty) {
           continue;
         }
-        final Rect expanded = Rect.fromLTRB(
-          charRect.left - _kHighlightHorizontalPadding,
-          charRect.top - _kHighlightVerticalPadding,
-          charRect.right + _kHighlightHorizontalPadding,
-          charRect.bottom + _kHighlightVerticalPadding,
-        );
+        final Rect expanded = _inflateSelectionRect(charRect);
         final Rect globalRect = expanded.shift(visual.bounds.topLeft);
         bounds = bounds == null
             ? globalRect
@@ -1348,12 +1355,7 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
       return null;
     }
 
-    final Rect inflated = Rect.fromLTRB(
-      baseRect.left - _kHighlightHorizontalPadding,
-      baseRect.top - _kHighlightVerticalPadding,
-      baseRect.right + _kHighlightHorizontalPadding,
-      baseRect.bottom + _kHighlightVerticalPadding,
-    );
+    final Rect inflated = _inflateSelectionRect(baseRect);
 
     return inflated.shift(visual.bounds.topLeft);
   }
@@ -2570,10 +2572,10 @@ class _OrientedBounds {
 
   Rect toRect() => Rect.fromLTRB(minU, minV, maxU, maxV);
 
-  Rect inflate(double horizontal, double vertical) => Rect.fromLTRB(
-    minU - horizontal,
+  Rect inflate(double left, double right, double vertical) => Rect.fromLTRB(
+    minU - left,
     minV - vertical,
-    maxU + horizontal,
+    maxU + right,
     maxV + vertical,
   );
 }
@@ -2805,7 +2807,8 @@ class _EditableBlockPainter extends CustomPainter {
       }
       inflatedRects.add(
         oriented.inflate(
-          _kHighlightHorizontalPadding,
+          _kHighlightLeftPadding,
+          _kHighlightRightPadding,
           _kHighlightVerticalPadding,
         ),
       );
@@ -2888,16 +2891,17 @@ class _EditableBlockPainter extends CustomPainter {
   Rect _inflateRect(Rect rect) {
     return _inflateRectBy(
       rect,
-      _kHighlightHorizontalPadding,
+      _kHighlightLeftPadding,
+      _kHighlightRightPadding,
       _kHighlightVerticalPadding,
     );
   }
 
-  Rect _inflateRectBy(Rect rect, double horizontal, double vertical) {
+  Rect _inflateRectBy(Rect rect, double left, double right, double vertical) {
     return Rect.fromLTRB(
-      rect.left - horizontal,
+      rect.left - left,
       rect.top - vertical,
-      rect.right + horizontal,
+      rect.right + right,
       rect.bottom + vertical,
     );
   }
