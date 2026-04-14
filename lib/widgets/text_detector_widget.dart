@@ -80,6 +80,28 @@ class TextDetectorController extends ChangeNotifier {
     }
     return state._selectAllRecognizedText();
   }
+
+  bool get hasActiveSelection => _state?._hasActiveSelection ?? false;
+
+  bool selectTextAtPosition(Offset globalPosition) {
+    final state = _state;
+    if (state == null) {
+      return false;
+    }
+    return state._selectTextAtPosition(globalPosition);
+  }
+
+  void clearSelection() {
+    _state?._clearSelection();
+  }
+
+  bool isPointOnSelectableText(Offset globalPosition) {
+    return _state?._isPointOnSelectableText(globalPosition) ?? false;
+  }
+
+  bool isPointOnInteractiveSelectionUi(Offset globalPosition) {
+    return _state?._isPointOnInteractiveSelectionUi(globalPosition) ?? false;
+  }
 }
 
 /// A complete text detection widget that displays an image and allows
@@ -136,6 +158,24 @@ class TextDetectorWidget extends StatefulWidget {
   /// Defaults to true for backward compatibility.
   final bool showScanAnimation;
 
+  /// Whether the underlying image viewer is currently zoomed.
+  final bool isImageZoomed;
+
+  /// Optional callback invoked instead of word selection on double tap while
+  /// the underlying image is zoomed.
+  final VoidCallback? onDoubleTapWhenZoomed;
+
+  /// Scale factor applied to the overlay by an ancestor transform.
+  /// Passed to [TextOverlayWidget] to counter-scale UI chrome (handles,
+  /// copy button) back to a fixed screen size. Defaults to 1.0 (no scaling).
+  final double uiScale;
+
+  /// Translation applied to the overlay by an ancestor transform.
+  final Offset uiOffset;
+
+  /// Determines how OCR gestures should behave while the image is zoomed.
+  final ZoomedInteractionPolicy zoomedInteractionPolicy;
+
   const TextDetectorWidget({
     super.key,
     required this.imagePath,
@@ -153,6 +193,11 @@ class TextDetectorWidget extends StatefulWidget {
     this.showEditorHint = true,
     this.initialInteractionPosition,
     this.showScanAnimation = true,
+    this.isImageZoomed = false,
+    this.onDoubleTapWhenZoomed,
+    this.uiScale = 1.0,
+    this.uiOffset = Offset.zero,
+    this.zoomedInteractionPolicy = ZoomedInteractionPolicy.panFirst,
   });
 
   @override
@@ -407,7 +452,8 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final bool showProcessingAnimation = _isProcessing &&
+    final bool showProcessingAnimation =
+        _isProcessing &&
         _detectedTextBlocks == null &&
         _userAttemptedInteraction;
 
@@ -445,23 +491,23 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
               _detectedTextBlocks!.isNotEmpty)
             _buildEditorHint(),
           if (_errorMessage != null)
-          Positioned(
-            bottom: 32,
-            left: 16,
-            right: 16,
-            child: _isNetworkError
-                ? _buildNetworkErrorBanner(_errorMessage!)
-                : _buildErrorBanner(_errorMessage!),
-          ),
-        if (_detectedTextBlocks != null &&
-            _detectedTextBlocks!.isEmpty &&
-            _errorMessage == null)
-          Positioned(
-            top: 100,
-            left: 0,
-            right: 0,
-            child: Center(child: _buildNoTextMessage()),
-          ),
+            Positioned(
+              bottom: 32,
+              left: 16,
+              right: 16,
+              child: _isNetworkError
+                  ? _buildNetworkErrorBanner(_errorMessage!)
+                  : _buildErrorBanner(_errorMessage!),
+            ),
+          if (_detectedTextBlocks != null &&
+              _detectedTextBlocks!.isEmpty &&
+              _errorMessage == null)
+            Positioned(
+              top: 100,
+              left: 0,
+              right: 0,
+              child: Center(child: _buildNoTextMessage()),
+            ),
         ],
       ),
     );
@@ -572,6 +618,11 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
       enableSelectionPreview: widget.enableSelectionPreview,
       debugMode: widget.debugMode,
       controller: _textOverlayController,
+      isImageZoomed: widget.isImageZoomed,
+      onDoubleTapWhenZoomed: widget.onDoubleTapWhenZoomed,
+      uiScale: widget.uiScale,
+      uiOffset: widget.uiOffset,
+      zoomedInteractionPolicy: widget.zoomedInteractionPolicy,
     );
 
     // In overlay-only mode, don't wrap in a Container with a color —
@@ -600,10 +651,7 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
       right: 0,
       child: Center(
         child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 20,
-            vertical: 12,
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.7),
             borderRadius: BorderRadius.circular(20),
@@ -611,17 +659,11 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const CupertinoActivityIndicator(
-                radius: 10,
-                color: Colors.white,
-              ),
+              const CupertinoActivityIndicator(radius: 10, color: Colors.white),
               const SizedBox(width: 8),
               Text(
                 widget.strings.processingOverlayMessage,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                ),
+                style: const TextStyle(color: Colors.white, fontSize: 14),
               ),
             ],
           ),
@@ -754,6 +796,38 @@ class _TextDetectorWidgetState extends State<TextDetectorWidget> {
       return false;
     }
     return _textOverlayController.selectAllText();
+  }
+
+  bool get _hasActiveSelection => _textOverlayController.hasActiveSelection;
+
+  bool _selectTextAtPosition(Offset globalPosition) {
+    if (_detectedTextBlocks == null) {
+      setState(() {
+        _userAttemptedInteraction = true;
+        _pendingSelectionPosition = globalPosition;
+      });
+      _notifyController();
+      if (_resolvedImagePath != null && !_isProcessing) {
+        unawaited(_detectText());
+      }
+      return false;
+    }
+    _textOverlayController.selectTextAtPosition(globalPosition);
+    return true;
+  }
+
+  void _clearSelection() {
+    _textOverlayController.clearSelection();
+  }
+
+  bool _isPointOnSelectableText(Offset globalPosition) {
+    return _textOverlayController.isPointOnSelectableText(globalPosition);
+  }
+
+  bool _isPointOnInteractiveSelectionUi(Offset globalPosition) {
+    return _textOverlayController.isPointOnInteractiveSelectionUi(
+      globalPosition,
+    );
   }
 
   void _notifyController() {

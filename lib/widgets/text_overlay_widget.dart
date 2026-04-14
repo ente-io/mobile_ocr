@@ -9,10 +9,15 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_ocr/models/text_block.dart';
 
-const double _kHighlightHorizontalPadding = 2.5;
+// OCR character boxes tend to overhang slightly on the left edge, so keep the
+// added selection slack slightly right-biased to visually center the highlight.
+const double _kHighlightLeftPadding = 3.0;
+const double _kHighlightRightPadding = 4.0;
 const double _kHighlightVerticalPadding = 1.6;
 const double _kHighlightCornerRadius = 4.0;
 const double _kHighlightLineToleranceFactor = 0.7;
+
+enum ZoomedInteractionPolicy { interactive, panFirst }
 
 /// Controller that surfaces imperative actions for [TextOverlayWidget].
 class TextOverlayController {
@@ -46,6 +51,8 @@ class TextOverlayController {
     return state._hasSelectableText;
   }
 
+  bool get hasActiveSelection => _state?._hasActiveSelection ?? false;
+
   /// Queue a position to auto-select when the overlay is ready.
   /// The selection happens after block visuals are computed.
   Offset? _pendingAutoSelectPosition;
@@ -58,6 +65,19 @@ class TextOverlayController {
       // Block visuals aren't ready yet; store for later.
       _pendingAutoSelectPosition = globalPosition;
     }
+  }
+
+  void clearSelection() {
+    _state?._clearSelection();
+  }
+
+  bool isPointOnSelectableText(Offset globalPosition) {
+    return _state?._isGlobalPointOnSelectableText(globalPosition) ?? false;
+  }
+
+  bool isPointOnInteractiveSelectionUi(Offset globalPosition) {
+    return _state?._isGlobalPointOnInteractiveSelectionUi(globalPosition) ??
+        false;
   }
 
   void _consumePendingSelection() {
@@ -91,11 +111,26 @@ class TextOverlayWidget extends StatefulWidget {
   final bool enableSelectionPreview;
   final bool debugMode;
   final TextOverlayController? controller;
+  final bool isImageZoomed;
+  final VoidCallback? onDoubleTapWhenZoomed;
 
   /// The original image dimensions in pixels. Required when using
   /// overlay-only mode (no [imageFile]). When [imageFile] is provided
   /// this is ignored — dimensions are read from the file.
   final Size? imageSize;
+
+  /// Scale factor applied to the overlay by an ancestor transform (e.g.
+  /// during photo zoom). Selection handles and the copy button are
+  /// counter-scaled by 1/[uiScale] so they appear at a fixed screen size
+  /// regardless of zoom level.
+  final double uiScale;
+
+  /// Translation applied to the overlay by an ancestor transform.
+  /// Used to clamp selection UI so it stays visible inside the viewport.
+  final Offset uiOffset;
+
+  /// Determines how OCR gestures should behave while the image is zoomed.
+  final ZoomedInteractionPolicy zoomedInteractionPolicy;
 
   const TextOverlayWidget({
     super.key,
@@ -108,7 +143,12 @@ class TextOverlayWidget extends StatefulWidget {
     this.enableSelectionPreview = false,
     this.debugMode = false,
     this.controller,
+    this.isImageZoomed = false,
+    this.onDoubleTapWhenZoomed,
     this.imageSize,
+    this.uiScale = 1.0,
+    this.uiOffset = Offset.zero,
+    this.zoomedInteractionPolicy = ZoomedInteractionPolicy.panFirst,
   }) : assert(
          imageFile != null || imageSize != null,
          'Either imageFile or imageSize must be provided',
@@ -121,8 +161,13 @@ class TextOverlayWidget extends StatefulWidget {
 class _TextOverlayWidgetState extends State<TextOverlayWidget> {
   static const double _epsilon = 1e-6;
   static const double _characterHitPadding = 3.0;
-  static const double _handleHitboxExtent = 52.0;
+  static const double _handleHitboxExtent = 72.0;
   static const double _toolbarMinVerticalSpacing = 24.0;
+  static const double _toolbarViewportMargin = 12.0;
+  static const double _toolbarButtonHorizontalPadding = 16.0;
+  static const double _toolbarButtonVerticalPadding = 10.0;
+  static const double _toolbarDividerWidth = 1.0;
+  static const double _toolbarBorderWidth = 1.0;
   static const double _kMaterialTextLineHeight = 20.0;
   static const double _kDragStartSlop = 6.0;
   static final TextSelectionControls _selectionControls =
@@ -164,6 +209,11 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     }
     return false;
   }
+
+  bool get _hasActiveSelection => _activeSelections.isNotEmpty;
+  bool get _isPanFirstWhileZoomed =>
+      widget.isImageZoomed &&
+      widget.zoomedInteractionPolicy == ZoomedInteractionPolicy.panFirst;
 
   Map<int, TextSelection> _activeSelections = <int, TextSelection>{};
   _SelectionAnchor? _baseAnchor;
@@ -402,8 +452,6 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
                   ],
                 ),
               ),
-              ..._buildSelectionHandles(),
-              if (copyButton != null) copyButton,
             ],
           ),
         );
@@ -412,34 +460,26 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
         // or selection handles. Uses a custom RenderBox that returns
         // false from hitTest unless the position passes the check.
         final Widget gestureLayer = _TextRegionHitTestBox(
-          hitTest: _isPositionOnText,
+          hitTest: _isPositionOnGestureLayer,
           child: RawGestureDetector(
-            behavior: HitTestBehavior.opaque,
+            behavior: HitTestBehavior.translucent,
             gestures: <Type, GestureRecognizerFactory>{
               _TextRegionLongPressRecognizer:
                   GestureRecognizerFactoryWithHandlers<
                     _TextRegionLongPressRecognizer
                   >(
                     () => _TextRegionLongPressRecognizer(
-                      hitTestBlock: _isPositionOnText,
+                      hitTestBlock: _isPositionOnGestureLayer,
                     ),
                     (_TextRegionLongPressRecognizer instance) {
                       instance
-                        ..hitTestBlock = _isPositionOnText
+                        ..hitTestBlock = _isPositionOnGestureLayer
                         ..onLongPressStart = (details) {
                           if (_activePointerCount > 1) return;
                           _onLongPressStart(details);
                         };
                     },
                   ),
-              if (_activeSelections.isNotEmpty)
-                TapGestureRecognizer:
-                    GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-                      TapGestureRecognizer.new,
-                      (TapGestureRecognizer instance) {
-                        instance.onTapDown = _handleOverlayTap;
-                      },
-                    ),
             },
             child: Listener(
               behavior: HitTestBehavior.translucent,
@@ -456,31 +496,12 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
           children: [
             visualLayer,
             gestureLayer,
-            // When text is selected, a full-screen tap detector clears the
-            // selection when the user taps anywhere outside text/handles.
-            // Uses HitTestBehavior.translucent so swipes still pass through.
-            if (_activeSelections.isNotEmpty)
-              GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: _clearSelection,
-                child: const SizedBox.expand(),
-              ),
             ..._buildSelectionHandles(),
             if (copyButton != null) copyButton,
           ],
         );
       },
     );
-  }
-
-  bool _isPositionOnText(Offset globalPosition) {
-    final scenePoint = _sceneFromGlobal(globalPosition);
-    if (scenePoint == null) return false;
-    // Also accept hits on selection handles so they can be dragged.
-    if (_activeSelections.isNotEmpty && _isScenePointOnHandle(scenePoint)) {
-      return true;
-    }
-    return _hitTestBlock(scenePoint) != null;
   }
 
   Offset? _sceneFromGlobal(Offset globalPoint) {
@@ -537,6 +558,11 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
       return;
     }
 
+    if (_isPanFirstWhileZoomed) {
+      _clearPointerSelectionTracking();
+      return;
+    }
+
     _clearPointerSelectionTracking();
     _selectionPointerId = event.pointer;
     _selectionPointerDownScenePoint = scenePoint;
@@ -558,8 +584,9 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
 
     if (_selectionDragArmed && !_selectionDragInProgress) {
       final Offset? initial = _selectionPointerDownScenePoint;
-      final double delta =
-          initial == null ? 0.0 : (scenePoint - initial).distance;
+      final double delta = initial == null
+          ? 0.0
+          : (scenePoint - initial).distance;
       if (delta < _kDragStartSlop) {
         return;
       }
@@ -764,6 +791,196 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     widget.controller?._consumePendingSelection();
   }
 
+  double get _effectiveUiScale =>
+      widget.uiScale <= _epsilon ? 1.0 : widget.uiScale;
+
+  Rect _viewportSceneRect(Size viewportSize) {
+    final Offset center = viewportSize.center(Offset.zero);
+
+    Offset inverseTransform(Offset viewportPoint) {
+      return center +
+          ((viewportPoint - center - widget.uiOffset) / _effectiveUiScale);
+    }
+
+    final Offset topLeft = inverseTransform(Offset.zero);
+    final Offset bottomRight = inverseTransform(
+      Offset(viewportSize.width, viewportSize.height),
+    );
+
+    return Rect.fromLTRB(
+      min(topLeft.dx, bottomRight.dx),
+      min(topLeft.dy, bottomRight.dy),
+      max(topLeft.dx, bottomRight.dx),
+      max(topLeft.dy, bottomRight.dy),
+    );
+  }
+
+  Size _measureToolbarScreenSize(
+    MaterialLocalizations localizations,
+    TextStyle buttonTextStyle,
+  ) {
+    final TextScaler textScaler = MediaQuery.textScalerOf(context);
+    final TextDirection textDirection = Directionality.of(context);
+
+    Size measureLabel(String text) {
+      final TextPainter painter = TextPainter(
+        text: TextSpan(text: text, style: buttonTextStyle),
+        textDirection: textDirection,
+        textScaler: textScaler,
+      )..layout();
+      return painter.size;
+    }
+
+    final Size copyLabelSize = measureLabel(localizations.copyButtonLabel);
+    final Size selectAllLabelSize = measureLabel(
+      localizations.selectAllButtonLabel,
+    );
+
+    final double buttonHeight = max(
+      max(copyLabelSize.height, selectAllLabelSize.height) +
+          (_toolbarButtonVerticalPadding * 2) +
+          (_toolbarBorderWidth * 2),
+      36.0,
+    );
+    double buttonWidthFor(Size labelSize) =>
+        max(labelSize.width + (_toolbarButtonHorizontalPadding * 2), 64.0);
+
+    return Size(
+      buttonWidthFor(copyLabelSize) +
+          buttonWidthFor(selectAllLabelSize) +
+          _toolbarDividerWidth +
+          (_toolbarBorderWidth * 2) +
+          8.0,
+      buttonHeight,
+    );
+  }
+
+  _ToolbarLayout? _toolbarLayout(BoxConstraints constraints) {
+    if (_activeSelections.isEmpty || _activeHandle != null || _isSelecting) {
+      return null;
+    }
+
+    final Rect? selectionBounds = _selectedRegionBounds();
+    if (selectionBounds == null) {
+      return null;
+    }
+
+    final MaterialLocalizations localizations = MaterialLocalizations.of(
+      context,
+    );
+    const TextStyle buttonTextStyle = TextStyle(
+      color: Colors.white,
+      fontSize: 14,
+      fontWeight: FontWeight.w500,
+    );
+
+    final Size screenSize = _measureToolbarScreenSize(
+      localizations,
+      buttonTextStyle,
+    );
+    final Size sceneSize = Size(
+      screenSize.width / _effectiveUiScale,
+      screenSize.height / _effectiveUiScale,
+    );
+    final Rect viewportSceneRect = _viewportSceneRect(constraints.biggest);
+    final double sceneMargin = _toolbarViewportMargin / _effectiveUiScale;
+    final double sceneSpacing =
+        max(_toolbarMinVerticalSpacing, _handleVisualHeight + 12.0) /
+        _effectiveUiScale;
+
+    final double minLeft = viewportSceneRect.left + sceneMargin;
+    final double maxLeft = max(
+      minLeft,
+      viewportSceneRect.right - sceneSize.width - sceneMargin,
+    );
+    final double left = (selectionBounds.center.dx - (sceneSize.width / 2))
+        .clamp(minLeft, maxLeft);
+
+    final double minTop = viewportSceneRect.top + sceneMargin;
+    final double maxTop = max(
+      minTop,
+      viewportSceneRect.bottom - sceneSize.height - sceneMargin,
+    );
+    final double preferredTop =
+        selectionBounds.top - sceneSpacing - sceneSize.height;
+    final double fallbackTop = selectionBounds.bottom + sceneSpacing;
+    final bool fitsAbove = preferredTop >= minTop;
+    final double top = (fitsAbove ? preferredTop : fallbackTop).clamp(
+      minTop,
+      maxTop,
+    );
+
+    return _ToolbarLayout(
+      sceneRect: Rect.fromLTWH(left, top, sceneSize.width, sceneSize.height),
+      screenSize: screenSize,
+    );
+  }
+
+  Rect _inflateSelectionRect(Rect rect) {
+    return Rect.fromLTRB(
+      rect.left - _kHighlightLeftPadding,
+      rect.top - _kHighlightVerticalPadding,
+      rect.right + _kHighlightRightPadding,
+      rect.bottom + _kHighlightVerticalPadding,
+    );
+  }
+
+  bool _isScenePointInSelectedRegion(Offset scenePoint) {
+    final Rect? selectionBounds = _selectedRegionBounds();
+    return selectionBounds != null && selectionBounds.contains(scenePoint);
+  }
+
+  bool _isScenePointOnToolbar(Offset scenePoint) {
+    final BoxConstraints? constraints = _lastConstraints;
+    if (constraints == null) {
+      return false;
+    }
+    final _ToolbarLayout? layout = _toolbarLayout(constraints);
+    return layout != null && layout.sceneRect.contains(scenePoint);
+  }
+
+  bool _isScenePointOnInteractiveSelectionUi(Offset scenePoint) {
+    return _isScenePointOnHandle(scenePoint) ||
+        _isScenePointOnToolbar(scenePoint) ||
+        _isScenePointInSelectedRegion(scenePoint);
+  }
+
+  bool _isGlobalPointOnSelectableText(Offset globalPosition) {
+    final Offset? scenePoint = _sceneFromGlobal(globalPosition);
+    return scenePoint != null && _hitTestBlock(scenePoint) != null;
+  }
+
+  bool _isGlobalPointOnInteractiveSelectionUi(Offset globalPosition) {
+    final Offset? scenePoint = _sceneFromGlobal(globalPosition);
+    return scenePoint != null &&
+        _isScenePointOnInteractiveSelectionUi(scenePoint);
+  }
+
+  bool _shouldClearSelectionAtScenePoint(Offset scenePoint) {
+    if (_activeSelections.isEmpty) {
+      return false;
+    }
+    return !_isScenePointOnInteractiveSelectionUi(scenePoint);
+  }
+
+  bool _isPositionOnGestureLayer(Offset globalPosition) {
+    final Offset? scenePoint = _sceneFromGlobal(globalPosition);
+    if (scenePoint == null) {
+      return false;
+    }
+
+    if (_isScenePointOnHandle(scenePoint) ||
+        _isScenePointOnToolbar(scenePoint)) {
+      return true;
+    }
+
+    if (_isPanFirstWhileZoomed) {
+      return false;
+    }
+
+    return _hitTestBlock(scenePoint) != null;
+  }
+
   Color _handleColor(BuildContext context) {
     final TextSelectionThemeData theme = TextSelectionTheme.of(context);
     final ColorScheme scheme = Theme.of(context).colorScheme;
@@ -842,12 +1059,7 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
         if (charRect.isEmpty) {
           continue;
         }
-        final Rect expanded = Rect.fromLTRB(
-          charRect.left - _kHighlightHorizontalPadding,
-          charRect.top - _kHighlightVerticalPadding,
-          charRect.right + _kHighlightHorizontalPadding,
-          charRect.bottom + _kHighlightVerticalPadding,
-        );
+        final Rect expanded = _inflateSelectionRect(charRect);
         final Rect globalRect = expanded.shift(visual.bounds.topLeft);
         bounds = bounds == null
             ? globalRect
@@ -900,21 +1112,10 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
   }
 
   Widget? _buildCopyHandleButton(BoxConstraints constraints) {
-    if (_activeSelections.isEmpty || _activeHandle != null || _isSelecting) {
+    final _ToolbarLayout? layout = _toolbarLayout(constraints);
+    if (layout == null) {
       return null;
     }
-
-    final Rect? selectionBounds = _selectedRegionBounds();
-    if (selectionBounds == null) {
-      return null;
-    }
-
-    final double spacing = max(
-      _toolbarMinVerticalSpacing,
-      _handleVisualHeight + 12.0,
-    );
-    final double anchorAboveY = selectionBounds.top - spacing;
-    final double anchorBelowY = selectionBounds.bottom + spacing;
 
     final MaterialLocalizations localizations = MaterialLocalizations.of(
       context,
@@ -926,7 +1127,6 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
       fontSize: 14,
       fontWeight: FontWeight.w500,
     );
-
 
     // Custom toolbar with explicit black background
     final Widget toolbar = Container(
@@ -952,9 +1152,14 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
             TextButton(
               style: TextButton.styleFrom(
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
                 shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.horizontal(left: Radius.circular(8)),
+                  borderRadius: BorderRadius.horizontal(
+                    left: Radius.circular(8),
+                  ),
                 ),
               ),
               onPressed: _copySelectedText,
@@ -963,16 +1168,18 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
                 style: buttonTextStyle,
               ),
             ),
-            Container(
-              width: 1,
-              color: Colors.white.withValues(alpha: 0.2),
-            ),
+            Container(width: 1, color: Colors.white.withValues(alpha: 0.2)),
             TextButton(
               style: TextButton.styleFrom(
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
                 shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.horizontal(right: Radius.circular(8)),
+                  borderRadius: BorderRadius.horizontal(
+                    right: Radius.circular(8),
+                  ),
                 ),
               ),
               onPressed: _selectAllText,
@@ -986,17 +1193,26 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
       ),
     );
 
-    // Position toolbar above or below selection
-    final bool fitsAbove = anchorAboveY > 50;
-    final double toolbarY = fitsAbove ? anchorAboveY - 44 : anchorBelowY;
-
     return Positioned(
-      left: 0,
-      right: 0,
-      top: fitsAbove ? toolbarY : null,
-      bottom: fitsAbove ? null : MediaQuery.of(context).size.height - toolbarY - 44,
-      child: Center(
-        child: toolbar,
+      left: layout.sceneRect.left,
+      top: layout.sceneRect.top,
+      width: layout.sceneRect.width,
+      height: layout.sceneRect.height,
+      child: OverflowBox(
+        alignment: Alignment.topLeft,
+        minWidth: layout.screenSize.width,
+        maxWidth: layout.screenSize.width,
+        minHeight: layout.screenSize.height,
+        maxHeight: layout.screenSize.height,
+        child: Transform.scale(
+          alignment: Alignment.topLeft,
+          scale: 1.0 / _effectiveUiScale,
+          child: SizedBox(
+            width: layout.screenSize.width,
+            height: layout.screenSize.height,
+            child: toolbar,
+          ),
+        ),
       ),
     );
   }
@@ -1024,18 +1240,35 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
         onPanUpdate: _onHandlePanUpdate,
         onPanEnd: (_) => _onHandlePanEnd(),
         onPanCancel: _onHandlePanCancel,
-        child: Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: _handleHorizontalPadding,
-            vertical: _handleVerticalPadding,
-          ),
-          child: _selectionControls.buildHandle(
-            context,
-            handleType,
-            _kMaterialTextLineHeight,
+        child: Transform.scale(
+          alignment: _handleScaleAlignment(handleType),
+          scale: 1.0 / _effectiveUiScale,
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: _handleHorizontalPadding,
+              vertical: _handleVerticalPadding,
+            ),
+            child: _selectionControls.buildHandle(
+              context,
+              handleType,
+              _kMaterialTextLineHeight,
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  Alignment _handleScaleAlignment(TextSelectionHandleType type) {
+    final Offset handleAnchor = _selectionControls.getHandleAnchor(
+      type,
+      _kMaterialTextLineHeight,
+    );
+    final Offset anchorWithinHitbox =
+        handleAnchor + Offset(_handleHorizontalPadding, _handleVerticalPadding);
+    return Alignment(
+      (anchorWithinHitbox.dx / _handleHitboxExtent) * 2 - 1,
+      (anchorWithinHitbox.dy / _handleHitboxExtent) * 2 - 1,
     );
   }
 
@@ -1122,12 +1355,7 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
       return null;
     }
 
-    final Rect inflated = Rect.fromLTRB(
-      baseRect.left - _kHighlightHorizontalPadding,
-      baseRect.top - _kHighlightVerticalPadding,
-      baseRect.right + _kHighlightHorizontalPadding,
-      baseRect.bottom + _kHighlightVerticalPadding,
-    );
+    final Rect inflated = _inflateSelectionRect(baseRect);
 
     return inflated.shift(visual.bounds.topLeft);
   }
@@ -1348,29 +1576,26 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     final bool wordSelected = _performWordSelection(
       blockIndex,
       scenePoint,
-      finalizeSelection: false,
+      finalizeSelection: true,
     );
 
-    if (!wordSelected) {
-      final anchor = _anchorForPoint(blockIndex, scenePoint);
-      setState(() {
-        _isSelecting = true;
-        _baseAnchor = anchor;
-        _extentAnchor = anchor;
-        _recomputeSelections();
-      });
+    if (wordSelected) {
+      _clearPointerSelectionTracking();
+      return;
     }
+
+    final anchor = _anchorForPoint(blockIndex, scenePoint);
+    setState(() {
+      _isSelecting = true;
+      _baseAnchor = anchor;
+      _extentAnchor = anchor;
+      _recomputeSelections();
+    });
 
     _selectionDragArmed = false;
     _selectionDragInProgress = true;
     _selectionPointerDownScenePoint ??= scenePoint;
     HapticFeedback.mediumImpact();
-  }
-
-  void _handleOverlayTap(TapDownDetails details) {
-    if (_activeSelections.isNotEmpty) {
-      _clearSelection();
-    }
   }
 
   void _handleTapDown(TapDownDetails details) {
@@ -1379,11 +1604,12 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
       return;
     }
 
-    if (_activeSelections.isNotEmpty && _isScenePointOnHandle(scenePoint)) {
+    if (_activeSelections.isNotEmpty &&
+        _isScenePointOnInteractiveSelectionUi(scenePoint)) {
       return;
     }
 
-    if (_hitTestBlock(scenePoint) == null && _activeSelections.isNotEmpty) {
+    if (_shouldClearSelectionAtScenePoint(scenePoint)) {
       _clearSelection();
     }
   }
@@ -1395,13 +1621,19 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
   void _handleDoubleTap() {
     final Offset? point = _pendingDoubleTapScenePoint;
     _pendingDoubleTapScenePoint = null;
+
+    if (widget.isImageZoomed && widget.onDoubleTapWhenZoomed != null) {
+      widget.onDoubleTapWhenZoomed!.call();
+      return;
+    }
+
     if (point == null) {
       return;
     }
 
     final int? blockIndex = _hitTestBlock(point);
     if (blockIndex == null) {
-      if (_activeSelections.isNotEmpty) {
+      if (_shouldClearSelectionAtScenePoint(point)) {
         _clearSelection();
       }
       return;
@@ -2120,8 +2352,8 @@ class _TextOverlayWidgetState extends State<TextOverlayWidget> {
     if (scenePoint == null) {
       return false;
     }
-    final blockIndex = _hitTestBlock(scenePoint) ??
-        _nearestBlockIndex(scenePoint);
+    final blockIndex =
+        _hitTestBlock(scenePoint) ?? _nearestBlockIndex(scenePoint);
     if (blockIndex == null) {
       return false;
     }
@@ -2340,10 +2572,10 @@ class _OrientedBounds {
 
   Rect toRect() => Rect.fromLTRB(minU, minV, maxU, maxV);
 
-  Rect inflate(double horizontal, double vertical) => Rect.fromLTRB(
-    minU - horizontal,
+  Rect inflate(double left, double right, double vertical) => Rect.fromLTRB(
+    minU - left,
     minV - vertical,
-    maxU + horizontal,
+    maxU + right,
     maxV + vertical,
   );
 }
@@ -2500,6 +2732,13 @@ class _DisplayMetrics {
   final Offset offset;
 }
 
+class _ToolbarLayout {
+  const _ToolbarLayout({required this.sceneRect, required this.screenSize});
+
+  final Rect sceneRect;
+  final Size screenSize;
+}
+
 class _EditableBlockPainter extends CustomPainter {
   const _EditableBlockPainter({
     required this.visual,
@@ -2568,7 +2807,8 @@ class _EditableBlockPainter extends CustomPainter {
       }
       inflatedRects.add(
         oriented.inflate(
-          _kHighlightHorizontalPadding,
+          _kHighlightLeftPadding,
+          _kHighlightRightPadding,
           _kHighlightVerticalPadding,
         ),
       );
@@ -2651,16 +2891,17 @@ class _EditableBlockPainter extends CustomPainter {
   Rect _inflateRect(Rect rect) {
     return _inflateRectBy(
       rect,
-      _kHighlightHorizontalPadding,
+      _kHighlightLeftPadding,
+      _kHighlightRightPadding,
       _kHighlightVerticalPadding,
     );
   }
 
-  Rect _inflateRectBy(Rect rect, double horizontal, double vertical) {
+  Rect _inflateRectBy(Rect rect, double left, double right, double vertical) {
     return Rect.fromLTRB(
-      rect.left - horizontal,
+      rect.left - left,
       rect.top - vertical,
-      rect.right + horizontal,
+      rect.right + right,
       rect.bottom + vertical,
     );
   }
@@ -2699,10 +2940,7 @@ class _EditableBlockPainter extends CustomPainter {
 class _TextRegionHitTestBox extends SingleChildRenderObjectWidget {
   final bool Function(Offset globalPosition) hitTest;
 
-  const _TextRegionHitTestBox({
-    required this.hitTest,
-    required super.child,
-  });
+  const _TextRegionHitTestBox({required this.hitTest, required super.child});
 
   @override
   RenderObject createRenderObject(BuildContext context) {
